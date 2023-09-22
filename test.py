@@ -1,9 +1,11 @@
 import jax
+import optax
 from typing import Any, Callable, Sequence
 import jax.numpy as jnp
 from jax import random
 import flax
 from flax import linen as nn
+from  flax import serialization
 
 # We create one dense layer instance (taking 'features' parameter as input)
 model = nn.Dense(features=5)
@@ -62,3 +64,79 @@ for i in range(101):
     params = update_params(params, learning_rate, grads)
     if i % 10 == 0:
         print(f'Loss step {i}: ', loss_val)
+
+tx = optax.adam(learning_rate=learning_rate)
+opt_state = tx.init(params)
+loss_grad_fn = jax.value_and_grad(mse)
+
+for i in range(101):
+  loss_val, grads = loss_grad_fn(params, x_samples, y_samples)
+  updates, opt_state = tx.update(grads, opt_state)
+  params = optax.apply_updates(params, updates)
+  if i % 10 == 0:
+    print('Loss step {}: '.format(i), loss_val)
+
+bytes_output = serialization.to_bytes(params)
+dict_output = serialization.to_state_dict(params)
+print('Dict output')
+print(dict_output)
+print('Bytes output')
+print(bytes_output)
+
+serialization.from_bytes(params, bytes_output)
+
+class ExplicitMLP(nn.Module):
+    features: Sequence[int]
+
+    def setup(self):
+        # we automatically know what to do with lists, dicts of submodules
+        self.layers = [nn.Dense(feat) for feat in self.features]
+        # for single submodules, we would just write:
+        # self.layer1 = nn.Dense(feat1)
+
+    def __call__(self, inputs):
+        x = inputs
+        for i, lyr in enumerate(self.layers):
+            x = lyr(x)
+            if i != len(self.layers) - 1:
+                x = nn.relu(x)
+        return x
+key = random.PRNGKey(17)
+key1, key2 = random.split(key, 2)
+x = random.uniform(key1, (4,4))
+
+model = ExplicitMLP(features=[3,4,5])
+params = model.init(key2, x)
+y = model.apply(params, x)
+print('initialized parameter shapes:\n', jax.tree_util.tree_map(jnp.shape, flax.core.unfreeze(params)))
+print('output:\n', y)
+
+try:
+    y = model(x) # Returns an error
+except AttributeError as e:
+    print(e)
+
+class SimpleMLP(nn.Module):
+    features: Sequence[int]
+
+    @nn.compact
+    def __call__(self, inputs):
+        x = inputs
+        for i, feat in enumerate(self.features):
+            x = nn.Dense(feat, name=f'layers_{i}')(x)
+            if i != len(self.features) - 1:
+                x = nn.relu(x)
+      # providing a name is optional though!
+      # the default autonames would be "Dense_0", "Dense_1", ...
+        return x
+key = random.PRNGKey(17)
+key1, key2 = random.split(key, 2)
+x = random.uniform(key1, (4,4))
+
+model = SimpleMLP(features=[3,4,5])
+params = model.init(key2, x)
+y = model.apply(params, x)
+
+print('initialized parameter shapes:\n', jax.tree_util.tree_map(jnp.shape, flax.core.unfreeze(params)))
+print('output:\n', y)
+
