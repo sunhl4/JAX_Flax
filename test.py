@@ -140,3 +140,61 @@ y = model.apply(params, x)
 print('initialized parameter shapes:\n', jax.tree_util.tree_map(jnp.shape, flax.core.unfreeze(params)))
 print('output:\n', y)
 
+#############
+class SimpleDense(nn.Module):
+    features: int
+    kernel_init: Callable = nn.initializers.lecun_normal()
+    bias_init: Callable = nn.initializers.zeros_init()
+
+    @nn.compact
+    def __call__(self, inputs):
+        kernel = self.param('kernel',
+                        self.kernel_init, # Initialization function
+                        (inputs.shape[-1], self.features))  # shape info.
+        y = jnp.dot(inputs, kernel)
+        bias = self.param('bias', self.bias_init, (self.features,))
+        y = y + bias
+        return y
+key = random.PRNGKey(17)
+key1, key2 = random.split(key, 2)
+x = random.uniform(key1, (4,4))
+
+model = SimpleDense(features=3)
+params = model.init(key2, x)
+y = model.apply(params, x)
+
+print('initialized parameters:\n', params)
+print('output:\n', y)
+
+class BiasAdderWithRunningMean(nn.Module):
+    decay: float = 0.99
+
+    @nn.compact
+    def __call__(self, x):
+        # easy pattern to detect if we're initializing via empty variable tree
+        is_initialized = self.has_variable('batch_stats', 'mean')
+        ra_mean = self.variable('batch_stats', 'mean',
+                            lambda s: jnp.zeros(s),
+                            x.shape[1:])
+        bias = self.param('bias', lambda rng, shape: jnp.zeros(shape), x.shape[1:])
+        if is_initialized:
+            ra_mean.value = self.decay * ra_mean.value + (1.0 - self.decay) * jnp.mean(x, axis=0, keepdims=True)
+
+        return x - ra_mean.value + bias
+
+
+key1, key2 = random.split(random.key(0), 2)
+x = jnp.ones((10,5))
+model = BiasAdderWithRunningMean()
+variables = model.init(key1, x)
+print('initialized variables:\n', variables)
+y, updated_state = model.apply(variables, x, mutable=['batch_stats'])
+print('updated state:\n', updated_state)
+
+for val in [1.0, 2.0, 3.0]:
+    x = val * jnp.ones((10,5))
+    y, updated_state = model.apply(variables, x, mutable=['batch_stats'])
+    old_state, params = flax.core.pop(variables, 'params')
+    variables = flax.core.freeze({'params': params, **updated_state})
+    print('updated state:\n', updated_state) # Shows only the mutable part
+
